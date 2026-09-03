@@ -1,0 +1,20 @@
+# Resultados de corridas experimentales — se regeneran con scripts/run_experiment.sh
+results/*
+!results/.gitkeep
+
+# Entorno local (la plantilla versionada es .env.example)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Datos sintéticos generados por scripts/seed_data.py
+load/k6/data/quotes.json
+
+# macOS
+.DS_Store

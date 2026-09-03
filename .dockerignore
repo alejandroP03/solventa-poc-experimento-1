@@ -1,0 +1,36 @@
+# El contexto de build es la raíz del repo (para copiar libs/solventa_common),
+# así que hay que excluir agresivamente todo lo que no entra en una imagen.
+
+.git
+.gitignore
+.dockerignore
+
+# Documentación y evidencia del informe
+*.md
+!README.md
+
+# Resultados y carga
+results/
+load/
+
+# Infraestructura: se monta por volumen en compose, no se hornea en la imagen
+infra/
+deploy/
+
+# Entorno
+.env
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Tests: la imagen de runtime no los necesita
+services/*/tests/
+
+# macOS
+.DS_Store
