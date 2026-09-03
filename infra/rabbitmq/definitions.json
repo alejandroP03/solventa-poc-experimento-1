@@ -1,0 +1,83 @@
+{
+  "_comment": [
+    "Definiciones cargadas al arrancar (kickoff §3.2).",
+    "",
+    "Contiene usuario, vhost, permisos y la topología estable. Los exchanges y la",
+    "cola se declaran TAMBIÉN desde la aplicación (messaging.declare_topology), de",
+    "forma idempotente, porque cada servicio debe poder reconstruir la topología si",
+    "el broker se reinicia a mitad de corrida: §8.2 exige que no haya dependencias",
+    "de orden de arranque.",
+    "",
+    "La cola cotizacion.requests se declara aquí con x-single-active-consumer para",
+    "que exista con los argumentos correctos antes de que arranque el primer",
+    "consumidor. Al cambiar CONSUMER_MODE a 'competing' hay que hacer 'make down'",
+    "(borra el volumen) o RabbitMQ rechazaría la redeclaración con 406.",
+    "",
+    "Las colas de respuesta cotizacion.replies.<instancia> NO se declaran aquí: son",
+    "auto-delete y las crea cada proceso de cotizacion al arrancar."
+  ],
+  "rabbit_version": "3.13.0",
+  "rabbitmq_version": "3.13.0",
+  "users": [
+    {
+      "name": "solventa",
+      "password": "solventa",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [{ "name": "/" }],
+  "permissions": [
+    {
+      "user": "solventa",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "policies": [],
+  "parameters": [],
+  "global_parameters": [],
+  "topic_permissions": [],
+  "exchanges": [
+    {
+      "name": "solventa.quotes",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "solventa.events",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "cotizacion.requests",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-single-active-consumer": true
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "solventa.quotes",
+      "vhost": "/",
+      "destination": "cotizacion.requests",
+      "destination_type": "queue",
+      "routing_key": "cotizacion.requests",
+      "arguments": {}
+    }
+  ]
+}

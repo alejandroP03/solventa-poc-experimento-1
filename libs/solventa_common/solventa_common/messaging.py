@@ -33,10 +33,18 @@ from . import metrics
 
 log = slog.get_logger("messaging")
 
-# Cabecera con el instante de publicación en epoch de coma flotante. La propiedad
-# AMQP `timestamp` es entera (segundos) y no serviría: `queue_wait` se mide en
-# milisegundos dentro de un presupuesto de 250 ms.
-HEADER_PUBLISHED_AT = "x-solventa-published-at"
+# Instante de publicación, en MICROSEGUNDOS enteros desde epoch.
+#
+# Dos restricciones se cruzan aquí:
+#   - La propiedad AMQP `timestamp` es entera en segundos y no sirve: `queue_wait`
+#     y `broker_reply` se miden en milisegundos dentro de un presupuesto de 250 ms.
+#   - Las tablas de cabeceras AMQP de pika 1.3.2 **no admiten float**: lanzan
+#     UnsupportedAMQPFieldException. Solo int, str, bytes, bool, Decimal,
+#     datetime, dict y list.
+# Microsegundos enteros satisfacen ambas: caben en un long y conservan resolución
+# sub-milisegundo para la descomposición del presupuesto de §7.1.
+HEADER_PUBLISHED_AT = "x-solventa-published-at-us"
+_MICROS = 1_000_000
 
 _BACKOFF_BASE_S = 0.5
 _BACKOFF_MAX_S = 15.0
@@ -164,7 +172,7 @@ class Publisher:
             delivery_mode=2 if persistent else 1,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            headers={HEADER_PUBLISHED_AT: time.time()},
+            headers={HEADER_PUBLISHED_AT: int(time.time() * _MICROS)},
         )
         body = json.dumps(payload, default=str).encode("utf-8")
 
@@ -186,7 +194,10 @@ class Publisher:
                 self._discard_channel()
                 if attempt == 0:
                     log.warning("publicación falló, reconectando", extra={"error": str(exc)})
-        raise RuntimeError(f"no se pudo publicar tras reconectar: {last_error}") from last_error
+        raise RuntimeError(
+            f"no se pudo publicar tras reconectar: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
 
     def declare_reply_queue(self, name: str) -> str:
         """Declara la cola de respuestas exclusiva de esta instancia (§3.2).
@@ -227,6 +238,7 @@ class Consumer:
         auto_ack: bool = False,
         name: str = "consumer",
         on_active: Callable[[bool], None] | None = None,
+        transit_stage: str = "queue_wait",
     ) -> None:
         self.url = url
         self.queue = queue
@@ -238,6 +250,11 @@ class Consumer:
         self.auto_ack = auto_ack
         self.name = name
         self.on_active = on_active
+        # Etapa de §7.1 a la que corresponde el tránsito por el broker de ESTA
+        # cola: `queue_wait` para cotizacion.requests, `broker_reply` para las
+        # colas de respuesta. Mezclarlas en una sola serie haría que el
+        # sobrecosto del broker se contara dos veces en la descomposición.
+        self.transit_stage = transit_stage
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -316,10 +333,15 @@ class Consumer:
             return
 
         published_at = (properties.headers or {}).get(HEADER_PUBLISHED_AT)
-        if isinstance(published_at, (int, float)):
-            waited = time.time() - float(published_at)
-            metrics.queue_wait_seconds.observe(max(waited, 0.0))
-            payload["_queue_wait_s"] = max(waited, 0.0)
+        if isinstance(published_at, int):
+            waited = max(time.time() - published_at / _MICROS, 0.0)
+            # Etapa de la descomposición del presupuesto (§7.1). El reloj es el
+            # del host Docker, compartido por todos los contenedores, así que la
+            # resta entre procesos es válida.
+            metrics.observe_stage_value(self.transit_stage, waited)
+            if self.transit_stage == "queue_wait":
+                metrics.queue_wait_seconds.observe(waited)
+            payload["_transit_s"] = waited
 
         try:
             self.on_message(properties, payload)

@@ -1,0 +1,2 @@
+# Flask, Gunicorn, prometheus-client, pika y requests llegan con solventa-common.
+# Sin dependencias adicionales (§13.8).

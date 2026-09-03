@@ -89,6 +89,65 @@ services:
     ports:
       - "8085:8085"
 
+  # Dos instancias del mismo código, distinto ROLE. RabbitMQ entrega a una sola
+  # (single active consumer) y promueve a la otra cuando la activa se desconecta:
+  # es la táctica de takeover del modelo de despliegue, implementada de forma
+  # nativa por el broker y sin coordinador propio.
+  procesador-cotizacion-primary:
+    <<: *service-defaults
+    container_name: solventa-procesador-primary
+    build:
+      context: .
+      dockerfile: services/procesador-cotizacion/Dockerfile
+    image: solventa/procesador-cotizacion:local
+    environment:
+      SERVICE_NAME: procesador-cotizacion
+      PORT: 8083
+      ROLE: PRIMARY
+    ports:
+      - "8083:8083"
+
+  procesador-cotizacion-backup:
+    <<: *service-defaults
+    container_name: solventa-procesador-backup
+    # Misma imagen que el primary: se construye una vez y se despliega dos.
+    image: solventa/procesador-cotizacion:local
+    environment:
+      SERVICE_NAME: procesador-cotizacion
+      PORT: 8084
+      ROLE: BACKUP
+    ports:
+      - "8084:8084"
+    depends_on:
+      - procesador-cotizacion-primary
+
+  # --- Broker --------------------------------------------------------------- #
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: solventa-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: solventa
+      RABBITMQ_DEFAULT_PASS: solventa
+      # Carga la topología estable al arrancar. Los servicios la redeclaran de
+      # forma idempotente, porque §8.2 no admite dependencias de orden.
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
+        -rabbitmq_management load_definitions "/etc/rabbitmq/definitions.json"
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # consola de management
+      - "15692:15692"   # exporter nativo de Prometheus
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
   # --- Instrumento del experimento ------------------------------------------ #
 
   mock-openfinance:
