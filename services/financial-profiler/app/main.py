@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from flask import Flask, jsonify, request
 
+from solventa_common import metrics
 from solventa_common.app_factory import create_app
 from solventa_common.config import load_config
 from solventa_common.logging import get_logger
 
+from .breaker import ProfileBreaker
 from .openfinance import OpenFinanceClient, Outcome
 
 log = get_logger("financial-profiler")
@@ -32,6 +34,7 @@ DEFAULT = "DEFAULT"    # sin dato: factores conservadores fijos (fase de SP-3)
 def create() -> Flask:
     cfg = load_config(service_name="financial-profiler", default_port=8085)
     openfinance = OpenFinanceClient(cfg)
+    breaker = ProfileBreaker(cfg, openfinance)
 
     def openfinance_reachable() -> tuple[bool, str]:
         """Check de /health/ready. No participa en ninguna decisión de tráfico.
@@ -40,6 +43,9 @@ def create() -> Flask:
         el veredicto de disponibilidad dependiera de quién preguntó, y SP-4 mide
         precisamente el desacuerdo entre fuentes de detección.
         """
+        # Llama al cliente crudo y no al circuito: un /health/ready que pasara
+        # por el breaker contaría como tráfico real y podría abrirlo, de modo que
+        # el propio diagnóstico alteraría la táctica que se está midiendo.
         result = openfinance.fetch_profile("healthcheck")
         return result.ok, result.detail or result.outcome.value
 
@@ -52,7 +58,7 @@ def create() -> Flask:
         if not client_id:
             return jsonify(error="falta 'client_id'"), 400
 
-        result = openfinance.fetch_profile(client_id)
+        result = breaker.fetch_profile(client_id)
 
         if result.ok:
             return jsonify(
@@ -72,6 +78,7 @@ def create() -> Flask:
                 "client_id": client_id,
                 "outcome": result.outcome.value,
                 "detail": result.detail,
+                "breaker_state": breaker.state,
             },
         )
         return jsonify(
@@ -84,26 +91,53 @@ def create() -> Flask:
     def dependency_health():
         """Señal del Monitor hacia el circuit breaker (§3.3).
 
-        Declarado desde ahora para fijar el contrato, pero **inerte**: no hay
-        breaker al que señalizar hasta la fase de SP-2, y la regla de que la señal
-        solo puede forzar la apertura y nunca el cierre se implementa en la fase
-        de SP-4. Aceptar la señal y no actuar todavía es preferible a que el
-        Monitor reciba 404 y su contador de errores midiera un problema inexistente.
+        REGLA DE DISEÑO: la señal **solo puede forzar la apertura, nunca el
+        cierre**. El cierre queda siempre en manos de la lógica half-open, que se
+        apoya en tráfico real. Un Monitor que cerrara el circuito reabriría la
+        propagación del fallo basándose en un endpoint que puede mentir — y en
+        los modos `slow` y `flaky` miente por diseño (§4).
+
+        Esa asimetría es la que SP-4 debe validar con datos, no asumir.
         """
         payload = request.get_json(silent=True) or {}
         state = payload.get("state")
         if state not in ("up", "down"):
             return jsonify(error="'state' debe ser 'up' o 'down'"), 400
 
+        metrics.health_signal_received_total.labels(state=state).inc()
+
+        applied = False
+        if state == "down":
+            applied = breaker.force_open()
+        # state == "up" se registra y se ignora deliberadamente: ver la regla.
+
         log.info(
-            "señal de salud recibida (aún sin efecto)",
+            "señal de salud recibida",
             extra={
                 "dependency": payload.get("dependency"),
                 "state": state,
                 "observed_at": payload.get("observed_at"),
+                "applied": applied,
+                "breaker_state": breaker.state,
             },
         )
-        return jsonify(accepted=True, applied=False, reason="breaker no implementado aún"), 202
+        return jsonify(
+            accepted=True,
+            applied=applied,
+            breaker_state=breaker.state,
+            note=None if state == "down" else "la señal 'up' no cierra el circuito (§3.3)",
+        ), 202
+
+    @app.get("/internal/breaker")
+    def breaker_state():
+        """Introspección del circuito, para el smoke test y la depuración."""
+        return jsonify(
+            dependency="openfinance",
+            state=breaker.state,
+            fail_counter=breaker.fail_counter,
+            fail_max=cfg.breaker_fail_max,
+            reset_timeout_s=cfg.breaker_reset_timeout_s,
+        ), 200
 
     return app
 
