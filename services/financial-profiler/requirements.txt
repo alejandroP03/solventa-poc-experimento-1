@@ -1,0 +1,7 @@
+# Flask, Gunicorn, prometheus-client y requests llegan con solventa-common.
+
+# TÁCTICA: circuit breaker — SP-2
+pybreaker==1.2.0
+
+# TÁCTICA: caché de perfil con TTL y ventana de gracia — SP-3
+redis==5.0.7
