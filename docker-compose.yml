@@ -121,6 +121,29 @@ services:
     depends_on:
       - procesador-cotizacion-primary
 
+  # --- Caché ---------------------------------------------------------------- #
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: solventa-redis
+    restart: unless-stopped
+    # Exclusivamente caché de perfil, NUNCA broker (§1): compartir la instancia
+    # entre caché y mensajería crearía un dominio de fallo común que confundiría
+    # la medición de SP-5, cuyo objeto es precisamente el aislamiento.
+    #
+    # Sin persistencia: el estado de la caché es parte del fixture de cada
+    # corrida y lo fija seed_data.py según CACHE_PRELOAD_RATIO. Que sobreviviera
+    # a un reinicio haría que una corrida heredara la caché de la anterior y el
+    # escenario de caché fría sería irreproducible.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   # --- Broker --------------------------------------------------------------- #
 
   rabbitmq:
