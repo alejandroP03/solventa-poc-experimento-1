@@ -1,0 +1,6 @@
+# Flask, Gunicorn y prometheus-client llegan como dependencias de solventa-common,
+# que se instala antes en el Dockerfile.
+#
+# Este servicio no necesita nada más: la inyección de fallos, los perfiles
+# deterministas y el temporizador de auto-revert se resuelven con la librería
+# estándar (§13.8: sin dependencias innecesarias).

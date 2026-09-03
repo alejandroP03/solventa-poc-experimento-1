@@ -24,7 +24,18 @@ from flask import Blueprint, jsonify
 Check = Callable[[], tuple[bool, str]]
 
 
-def build_blueprint(service_name: str, checks: Mapping[str, Check] | None = None) -> Blueprint:
+def build_blueprint(
+    service_name: str,
+    checks: Mapping[str, Check] | None = None,
+    *,
+    alias: bool = True,
+) -> Blueprint:
+    """`alias=False` deja `/health` libre para que el servicio lo defina.
+
+    Lo usa `mock-openfinance`: su `/health` es el objetivo del Ping-Echo del
+    Monitor y debe reflejar el estado de fallo inyectado, incluida la mentira
+    deliberada de los modos `slow` y `flaky` (§4).
+    """
     bp = Blueprint("health", __name__)
     checks = dict(checks or {})
 
@@ -49,10 +60,10 @@ def build_blueprint(service_name: str, checks: Mapping[str, Check] | None = None
             200 if all_ok else 503
         )
 
-    # Alias de conveniencia para curl manual y para el mock, cuyo /health es
-    # además el objetivo del Ping-Echo del Monitor.
-    @bp.get("/health")
-    def health():
-        return jsonify(status="alive", service=service_name), 200
+    if alias:
+        # Alias de conveniencia para curl manual y para el smoke test.
+        @bp.get("/health")
+        def health():
+            return jsonify(status="alive", service=service_name), 200
 
     return bp

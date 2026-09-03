@@ -52,6 +52,7 @@ def create_app(
     *,
     checks: Mapping[str, health.Check] | None = None,
     generate_correlation: bool = False,
+    health_alias: bool = True,
 ) -> Flask:
     """Crea la app Flask con todo lo transversal instalado."""
     slog.configure(cfg.service_name, cfg.log_level, cfg.log_format)
@@ -61,7 +62,9 @@ def create_app(
     app.config["SOLVENTA"] = cfg
 
     correlation.install(app, generate_if_missing=generate_correlation)
-    app.register_blueprint(health.build_blueprint(cfg.service_name, checks))
+    app.register_blueprint(
+        health.build_blueprint(cfg.service_name, checks, alias=health_alias)
+    )
 
     _install_http_metrics(app, cfg)
 

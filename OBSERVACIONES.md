@@ -62,6 +62,36 @@ Cada entrada sigue el formato:
 
 ---
 
+## OBS-05 — El estado de las tácticas es estado de proceso, no de servicio
+
+- **Qué se observó.** Detectado empíricamente al verificar el mock (Fase 2): con
+  `GUNICORN_WORKERS=2`, `POST /admin/mode` solo alcanzaba a uno de los dos workers y la
+  mitad del tráfico seguía viendo al proveedor sano. El mismo mecanismo afecta a **las
+  tácticas bajo prueba**: el contador de fallos y el estado del `pybreaker` viven en la
+  memoria de un proceso, igual que el registro de esperas de `cotizacion`.
+- **Por qué importa.** Con N procesos hay N circuit breakers independientes:
+  1. El umbral efectivo de apertura pasa a ser **N × `BREAKER_FAIL_MAX`**, así que la
+     ventana de detección de SP-2 se multiplica por N sin que ninguna variable lo diga.
+  2. La señal del Monitor (`POST /internal/dependency-health`, §3.3) llega a **un solo
+     proceso**: los demás siguen propagando el fallo. SP-4 mediría una ventaja del Monitor
+     artificialmente pequeña.
+  3. La misma fragmentación ocurriría al escalar horizontalmente el servicio en ECS, que es
+     el despliegue objetivo de §8 — no es un artefacto de Gunicorn.
+- **Cómo se expone.** El modelo funcional del Cuaderno IV muestra **un** Circuit Breaker, no
+  uno por proceso. Para ser fiel a esa vista, los servicios que albergan estado de táctica o
+  de correlación corren con **un worker** y concurrencia por hilos: `financial-profiler`
+  (breaker y señal), `monitor` (lazo periódico), `procesador-cotizacion` (consumidor AMQP),
+  `health-manager`, `notificador` y `mock-openfinance` (estado del fixture).
+  `api-gateway`, `socio-distribucion` y `cotizacion` conservan `GUNICORN_WORKERS=2`, que es
+  donde SP-5 mide la saturación.
+  La debilidad **no se corrige**: se documenta. La métrica que la expondría es
+  `solventa_circuit_breaker_transitions_total` desagregada por instancia (`pod`/`pid`),
+  comparando la ventana de detección con 1 y con N réplicas del profiler. Queda propuesta
+  como extensión, fuera del alcance de §2.1.
+- **Estado.** medida (el mecanismo) / abierta (su cuantificación con N réplicas).
+
+---
+
 ## OBS-04 — `solventa_detection_latency_seconds` mide algo distinto de la latencia de detección real
 
 - **Qué se observó.** El `financial-profiler` no conoce el instante en que se inyectó el
