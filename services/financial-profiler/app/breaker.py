@@ -161,7 +161,7 @@ class ProfileBreaker:
             # Fallo atribuible al proveedor: cuenta para el umbral.
             raise OpenFinanceFailure(result)
 
-        if result.outcome is Outcome.REJECTED_OPEN:
+        if result.outcome is Outcome.REJECTED_POOL:
             # El bulkhead rechazó antes de llamar (SP-5). NO es un fallo del
             # proveedor: contarlo abriría el circuito por saturación propia y
             # contaminaría la medición de SP-2 con el efecto de SP-5.

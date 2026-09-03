@@ -7,7 +7,7 @@ BASELINE := -f docker-compose.yml -f docker-compose.baseline.yml
 LOAD := -f docker-compose.yml -f docker-compose.load.yml
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down restart logs ps build build-one smoke seed exp collect fault reset clean test
+.PHONY: help env up down restart logs ps build build-one smoke seed exp collect fault reset clean test reload-gateway
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -18,9 +18,31 @@ env: ## Crea .env a partir de .env.example si no existe
 
 up: env ## Levanta el stack completo en modo treatment
 	$(COMPOSE) up -d --build
+	@$(MAKE) --no-print-directory reload-gateway
 
 baseline: env ## Levanta el stack en modo baseline (control de SP-0)
 	$(COMPOSE) $(BASELINE) up -d --build
+	@$(MAKE) --no-print-directory reload-gateway
+
+reload-gateway: ## Reinicia Kong para que re-resuelva las IPs de los upstreams
+	@# OBLIGATORIO tras recrear cualquier servicio upstream.
+	@#
+	@# Kong cachea la IP del contenedor que resolvió al arrancar. Recrear
+	@# `cotizacion` le asigna una IP nueva y Kong sigue pegando a la vieja,
+	@# devolviendo 502 de forma permanente.
+	@#
+	@# Esto invalidaría el experimento entero: run_experiment.sh recrea
+	@# servicios entre cada combinación de la matriz, y toda corrida salvo la
+	@# primera reportaría 100% de 5xx en el gateway — justo la métrica que
+	@# decide si el ASR se cumple — pareciendo un fallo de la arquitectura.
+	@# Ver OBSERVACIONES.md, OBS-07.
+	@$(COMPOSE) restart kong >/dev/null 2>&1 || true
+	@printf 'esperando a Kong'
+	@for i in $$(seq 30); do \
+		if curl -sf -o /dev/null http://localhost:8100/status 2>/dev/null; then \
+			printf ' listo\n'; exit 0; \
+		fi; printf '.'; sleep 1; \
+	done; printf ' AGOTADO\n'; exit 1
 
 down: ## Detiene el stack y borra volúmenes
 	$(COMPOSE) down -v --remove-orphans

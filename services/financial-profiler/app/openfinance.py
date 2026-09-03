@@ -23,7 +23,7 @@ import requests
 
 from solventa_common import metrics
 from solventa_common.config import Config
-from solventa_common.http_client import HttpClient, PoolRejected
+from solventa_common.http_client import BoundedPool, HttpClient, PoolRejected
 from solventa_common.logging import get_logger
 
 log = get_logger("openfinance")
@@ -35,7 +35,8 @@ class Outcome(str, Enum):
     SUCCESS = "success"
     TIMEOUT = "timeout"
     ERROR = "error"
-    REJECTED_OPEN = "rejected_open"  # el breaker cortó sin llamar (SP-2, fase 6)
+    REJECTED_OPEN = "rejected_open"  # el breaker cortó sin llamar (SP-2)
+    REJECTED_POOL = "rejected_pool"  # el bulkhead cortó sin llamar (SP-5)
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,25 @@ class OpenFinanceClient:
     def __init__(self, cfg: Config, client: HttpClient | None = None) -> None:
         self.cfg = cfg
         self.timeout_s = cfg.openfinance_timeout_s
-        self._client = client or HttpClient(cfg.openfinance_url, timeout_s=self.timeout_s)
+
+        # TÁCTICA: bulkhead — SP-5 (pool aislado B: salida hacia Open Finance)
+        # Uno de los dos frentes de saturación que SP-5 mide. Acota cuántas
+        # llamadas pueden estar colgadas contra el proveedor a la vez, de modo
+        # que un proveedor que no responde no consuma todos los hilos de este
+        # servicio. `POOL_OPENFINANCE_MAX` es su variable independiente.
+        #
+        # Rechazo inmediato (acquire_timeout_s=0): esperar por un slot para
+        # luego esperar el timeout completo retendría el hilo el doble de tiempo,
+        # que es justo el recurso que este bulkhead protege.
+        self.pool = BoundedPool(
+            "openfinance",
+            cfg.pool_openfinance_max,
+            enabled=cfg.tactic_enabled("bulkhead"),
+            acquire_timeout_s=0.0,
+        )
+        self._client = client or HttpClient(
+            cfg.openfinance_url, timeout_s=self.timeout_s, pool=self.pool
+        )
 
     def fetch_profile(self, client_id: str) -> CallResult:
         """Pide el perfil. Nunca lanza: clasifica el fallo y lo devuelve.
@@ -78,11 +97,17 @@ class OpenFinanceClient:
             )
             return CallResult(Outcome.TIMEOUT, duration_s=elapsed, detail="timeout")
         except PoolRejected as exc:
-            # El bulkhead (SP-5) rechazó sin llegar a llamar. No es un fallo del
-            # proveedor: no debe contaminar el conteo de fallos del breaker.
+            # El bulkhead (SP-5) rechazó sin llegar a llamar. NO es un fallo del
+            # proveedor y no debe contaminar el conteo del breaker: contarlo
+            # abriría el circuito por saturación propia y SP-2 mediría en parte
+            # el efecto de SP-5.
+            #
+            # Se etiqueta `rejected_pool` y no `rejected_open` para poder separar
+            # en el informe cuántas peticiones cortó el bulkhead de cuántas cortó
+            # el circuito: son tácticas distintas con criterios distintos.
             elapsed = time.perf_counter() - started
-            self._observe(Outcome.REJECTED_OPEN, elapsed)
-            return CallResult(Outcome.REJECTED_OPEN, duration_s=elapsed, detail=str(exc))
+            self._observe(Outcome.REJECTED_POOL, elapsed)
+            return CallResult(Outcome.REJECTED_POOL, duration_s=elapsed, detail=str(exc))
         except requests.RequestException as exc:
             elapsed = time.perf_counter() - started
             self._observe(Outcome.ERROR, elapsed)

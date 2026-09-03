@@ -62,6 +62,94 @@ Cada entrada sigue el formato:
 
 ---
 
+## OBS-08 — El bulkhead de esperas de réplica es inoperante con los valores de §5.1
+
+- **Qué se observó.** Medido en la Fase 9 con el fixture `timeout` y
+  `BREAKER_ENABLED=false`, comparando el p95 de la ruta Provider contra su línea base sana:
+
+  | Configuración | p95 Provider | vs. línea base | Rechazos del pool |
+  |---|---|---|---|
+  | Línea base sana | 33 ms | — | — |
+  | `BULKHEAD_ENABLED=true`, `POOL_PENDING_REPLIES_MAX=16` | **838 ms** | **×25** | **0** |
+
+  Con el valor por defecto del kickoff, el bulkhead **nunca rechazó una sola petición** y
+  la ruta Provider se degradó 25 veces.
+
+- **Por qué importa.** El semáforo vive en memoria de proceso, igual que los hilos que
+  pretende particionar. `cotizacion` corre con `GUNICORN_WORKERS=2` y
+  `GUNICORN_THREADS=4`, así que **cada worker tiene 4 hilos y su propio pool de 16**: cuatro
+  hilos nunca pueden agotar dieciséis permisos. El semáforo no puede bloquear, luego no
+  puede rechazar, luego no puede liberar hilos para la ruta Provider.
+
+  La consecuencia alcanza al diseño experimental: los tres valores que §5.1 propone para
+  esta variable —`8 | 16 | 32`— son **todos** mayores que `GUNICORN_THREADS=4`. Es decir,
+  **la variable independiente de SP-5 no tiene ningún efecto observable en ninguno de sus
+  tres niveles**. La condición necesaria para que el bulkhead actúe es
+  `POOL_PENDING_REPLIES_MAX < GUNICORN_THREADS`, que ningún valor propuesto cumple.
+
+  Esto explica también por qué el daño viaja: la degradación de la ruta Provider no la
+  produce el pool, la produce el agotamiento de los hilos de Gunicorn, y el pool tal como
+  está dimensionado no interviene en absoluto.
+
+- **Cómo se expone.** `solventa_pool_rejected_total{pool="pending_replies"}` constante en 0
+  durante toda la ventana de saturación, junto al p95 de la ruta Provider degradándose. Las
+  dos series a la vez son la prueba: hay daño y el mecanismo que debía contenerlo no se
+  activó. La corrida de SP-5 debe incluir al menos un nivel con
+  `POOL_PENDING_REPLIES_MAX < GUNICORN_THREADS` para poder contrastar contra el diseño
+  as-is; se propone añadir `2` a la rejilla **como nivel de contraste**, dejando `8|16|32`
+  para documentar que el diseño entregado no aísla.
+
+- **No es un defecto de implementación.** `libs/solventa_common/tests/test_http_client.py`
+  demuestra a nivel unitario que `BoundedPool` acepta hasta su máximo, rechaza el siguiente
+  de forma inmediata y libera el slot incluso si el cuerpo lanza. El pool funciona; lo que
+  no funciona es su **dimensionamiento** frente al recurso que pretende particionar.
+
+- **No se corrige en el código.** El dimensionamiento viene de §5.1 y se respeta (§13.5). Lo
+  que se reporta es que, con esos valores, la táctica de bulkhead sobre las esperas de
+  réplica está declarada pero no operativa — y que el aislamiento observado entre la ruta
+  Provider y la de perfilamiento proviene de la separación en contenedores distintos, no del
+  bulkhead. Relacionado con [[OBS-05]]: en ambos casos, el estado por proceso hace que el
+  valor efectivo de un parámetro difiera del que declara la configuración.
+
+- **Pendiente.** La medición definitiva, con la línea de tiempo de §7 y la serie de control
+  en paralelo, corresponde a k6 en las Fases 12–13. Lo establecido aquí es el mecanismo y su
+  dirección; la rejilla completa de SP-5 aportará las cifras del informe.
+
+- **Estado.** medida (el mecanismo) / pendiente (la rejilla completa con k6).
+
+---
+
+## OBS-07 — Kong cachea la IP del upstream: riesgo de invalidar toda la matriz
+
+- **Qué se observó.** Tras recrear el contenedor de `cotizacion` (`docker compose up -d
+  cotizacion`), Kong siguió enviando tráfico a la IP anterior y devolvió **502 de forma
+  permanente**, mientras `cotizacion` respondía 200 correctamente en su puerto directo.
+  Reiniciar Kong lo resolvió de inmediato.
+
+- **Por qué importa.** Es el hallazgo más peligroso encontrado durante la construcción, y no
+  es un problema de la arquitectura sino **del instrumento**. `run_experiment.sh` recrea
+  servicios entre cada combinación de la matriz —del orden de 40 corridas—, así que toda
+  corrida posterior a la primera habría reportado **100 % de 5xx en el gateway**. Ese es
+  justo el número que decide si el ASR-Disp-09 se cumple. El informe habría concluido que la
+  arquitectura falla catastróficamente cuando lo que fallaba era una caché de DNS.
+
+  Un fallo del instrumento que produce exactamente la señal que el experimento busca es la
+  peor clase de error posible: es indistinguible del resultado, y confirma la hipótesis
+  contraria con evidencia fabricada.
+
+- **Cómo se expone y se contiene.** `make reload-gateway` reinicia Kong y espera a que su
+  `/status` responda; `make up` y `make baseline` lo invocan siempre al final, y
+  `run_experiment.sh` debe invocarlo tras cada recreación de servicios. Además,
+  `solventa:gateway_5xx_by_source:rate` (regla de registro sobre
+  `kong_http_requests_total{source}`) separa los 5xx generados por Kong de los del upstream:
+  si el problema reapareciera, aparecería como `source="kong"` y sería reconocible en el
+  dashboard en lugar de contarse contra el ASR.
+
+- **Estado.** medida y contenida. Es una consecuencia operativa de [[OBS-06]] que no existía
+  con el gateway en Flask, y debe figurar en el informe como coste de esa decisión.
+
+---
+
 ## OBS-06 — Desviación deliberada: Kong sustituye al `api-gateway` en Flask
 
 - **Qué se observó.** Decisión del equipo durante la construcción, no un hallazgo de
