@@ -1,0 +1,36 @@
+# Override del modo `baseline` — el control de SP-0 (kickoff §3.4).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.baseline.yml up -d
+#   make baseline
+#
+# Sin caché, sin breaker, sin cola y sin bulkhead: cotizacion llama a
+# financial-profiler y este a mock-openfinance en cadena bloqueante con timeout
+# de 30 s. El fallo del proveedor se propaga como 502/504 hasta el socio.
+#
+# **Este modo debe fallar.** Es lo que demuestra que el problema existe. Si el
+# baseline no falla, el experimento completo carece de premisa (§7 SP-0) y hay
+# que revisar la configuración de concurrencia antes de continuar.
+#
+# QUOTE_MODE=baseline desactiva por sí solo los cuatro flags de ablación
+# (config.Config.tactic_enabled): el baseline es por definición la ausencia de
+# todas las tácticas, así que un BREAKER_ENABLED=true heredado del entorno no
+# puede reactivarlas.
+
+services:
+  cotizacion:
+    environment:
+      SERVICE_NAME: cotizacion
+      PORT: 8082
+      QUOTE_MODE: baseline
+
+  financial-profiler:
+    environment:
+      SERVICE_NAME: financial-profiler
+      PORT: 8085
+      QUOTE_MODE: baseline
+
+  socio-distribucion:
+    environment:
+      SERVICE_NAME: socio-distribucion
+      PORT: 8081
+      QUOTE_MODE: baseline

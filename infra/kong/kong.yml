@@ -1,0 +1,95 @@
+# Kong en modo DB-less declarativo — punto de entrada del socio.
+#
+# Sustituye al `api-gateway` en Flask del kickoff §2.1. Kong cubre sus dos
+# responsabilidades (generar y propagar el X-Correlation-Id, y ser la frontera de
+# medición del 5xx) sin añadir un servicio Python que mantener.
+# Ver README "Decisiones de implementación" y OBSERVACIONES.md OBS-06.
+#
+# El upstream se declara aquí, como en prometheus.yml o en las definiciones de
+# RabbitMQ: es configuración de topología, no código. Apuntar a otro entorno es
+# cambiar esta línea, igual que el argumento de Amazon MQ en §8.2.
+
+_format_version: "3.0"
+
+services:
+  - name: cotizacion
+    # La ruta upstream va en la URL del servicio: con strip_path las peticiones a
+    # /v1/quotes llegan a cotizacion como POST /quotes.
+    url: http://cotizacion:8082/quotes
+
+    connect_timeout: 2000
+
+    # 35 s, por encima del timeout de 30 s de la cadena baseline y muy por encima
+    # de REPLY_TIMEOUT_MS. Si Kong cortara antes que cotizacion generaría 5xx
+    # propios y FALSEARÍA la métrica del ASR, atribuyendo al sistema un fallo que
+    # la táctica sí había contenido.
+    read_timeout: 35000
+    write_timeout: 35000
+
+    # CRÍTICO PARA LA VALIDEZ DEL EXPERIMENTO.
+    # El default de Kong son 5 reintentos. Durante la ventana de indisponibilidad
+    # cada petición del socio se convertiría en hasta 5 peticiones al upstream,
+    # multiplicando por 5 la carga contra un sistema que ya está saturado:
+    #   - el conteo de fallos del breaker (SP-2) cruzaría el umbral 5 veces antes,
+    #   - la ventana de detección medida sería artificialmente corta,
+    #   - la saturación de recursos de SP-5 no sería la que la carga declara.
+    # El modelo de §3 no contempla reintentos en el gateway. Se desactivan.
+    retries: 0
+
+    routes:
+      - name: quotes
+        paths:
+          - /v1/quotes
+        methods:
+          - POST
+        strip_path: true
+
+  # Serie de control de SP-5: solo la ruta Provider, sin perfilamiento.
+  # Se declara como servicio Kong aparte para que sus métricas de latencia queden
+  # separadas de las del journey completo — comparar el p95 de esta ruta contra
+  # su línea base sana es la métrica de decisión de SP-5.
+  #
+  # Apunta a `cotizacion` y no directamente a `socio-distribucion` a propósito:
+  # debe compartir los hilos de Gunicorn con la ruta de perfilamiento. Golpear el
+  # otro contenedor mediría el aislamiento por separación de procesos, que es
+  # gratuito y siempre perfecto, en lugar del bulkhead, que es la variable
+  # independiente del sub-experimento.
+  - name: cotizacion-provider
+    url: http://cotizacion:8082/provider-quote
+    connect_timeout: 2000
+    read_timeout: 35000
+    write_timeout: 35000
+    retries: 0
+    routes:
+      - name: provider-control
+        paths:
+          - /v1/provider-quote
+        methods:
+          - GET
+        strip_path: true
+
+# Plugins globales: aplican a todas las rutas.
+plugins:
+  # Función 1 del gateway (§3.5): aquí nace el correlation_id.
+  # `generator: uuid` produce un UUID; `echo_downstream` lo devuelve al socio para
+  # que pueda citarlo al reportar una cotización concreta, que es la evidencia
+  # diagnóstica que el informe necesita.
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-Id
+      generator: uuid
+      echo_downstream: true
+
+  # Función 2 del gateway: frontera de medición del 5xx del ASR-Disp-09.
+  # status_code_metrics y latency_metrics son opt-in desde Kong 3.x; sin ellos no
+  # habría tasa de error ni latencia en el borde, que es justo lo que se mide.
+  # Las series se renombran a solventa_* con reglas de registro de Prometheus
+  # (infra/prometheus/rules/kong.yml) para que dashboards y collect_results.py
+  # consulten un único espacio de nombres.
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      upstream_health_metrics: true
+      bandwidth_metrics: false
+      per_consumer: false

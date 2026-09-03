@@ -13,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
     # BREAKER_FAIL_MAX y la señal del Monitor alcanzaría solo a la mitad del
     # tráfico. El modelo funcional muestra UN circuit breaker.
     # Ver OBSERVACIONES.md, OBS-05.
-    GUNICORN_WORKERS=1 \
+    SOLVENTA_SINGLE_PROCESS=true \
     GUNICORN_THREADS=8
 
 WORKDIR /app

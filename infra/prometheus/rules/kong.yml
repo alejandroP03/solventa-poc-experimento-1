@@ -1,0 +1,81 @@
+# Reglas de registro: reconcilian las métricas de Kong con el espacio de nombres
+# `solventa_*` (kickoff §6).
+#
+# Kong sustituye al api-gateway en Flask (ver OBSERVACIONES.md OBS-06), pero
+# emite sus propias series con otros nombres y otras etiquetas. Sin estas reglas,
+# los dashboards y `collect_results.py` tendrían que consultar dos espacios de
+# nombres distintos según el servicio, y la tasa de 5xx del ASR —la métrica que
+# decide si el experimento pasa— sería la única que se lee de otra forma.
+#
+# Las reglas NO transforman valores: solo renombran y reetiquetan.
+
+groups:
+  - name: kong_como_frontera_de_medicion
+    interval: 1s   # igual que scrape_interval: la ventana de detección de SP-2
+                   # se mide en segundos y una regla más lenta la difuminaría
+    rules:
+
+      # --- Tasa de 5xx del ASR-Disp-09 ---------------------------------------
+      # Esta es LA métrica de decisión: 0 % de solicitudes con error 5xx durante
+      # el evento de indisponibilidad. Se mide en el borde porque es lo que el
+      # socio observa.
+      - record: solventa:gateway_requests:total
+        expr: |
+          sum by (route, code, source) (kong_http_requests_total)
+
+      # `source` separa los errores generados por Kong de los que vienen del
+      # upstream. Un 5xx con source="kong" significaría que el gateway cortó
+      # antes de tiempo y estaría FALSEANDO el resultado del experimento: se
+      # vigila por separado en lugar de sumarlo al total.
+      - record: solventa:gateway_5xx_rate:ratio
+        expr: |
+          sum(rate(kong_http_requests_total{code=~"5.."}[30s]))
+          /
+          clamp_min(sum(rate(kong_http_requests_total[30s])), 0.001)
+
+      - record: solventa:gateway_5xx_by_source:rate
+        expr: |
+          sum by (source) (rate(kong_http_requests_total{code=~"5.."}[30s]))
+
+      # --- Etapa `gateway` de la descomposición de §7.1 ----------------------
+      # OJO (OBS-06): esta etapa cambió de definición al adoptar Kong. Es el
+      # tiempo de proceso propio del gateway, SIN el upstream — más limpio que lo
+      # que medía el gateway en Flask, pero no es la misma serie ni comparte
+      # buckets con el resto de la descomposición. Se expresa en segundos para
+      # que sea sumable con las demás etapas.
+      - record: solventa:journey_stage_gateway_p95:seconds
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(kong_kong_latency_ms_bucket[30s]))
+          ) / 1000
+
+      # --- Latencia extremo a extremo vista por el socio ---------------------
+      # Los buckets de Kong tienen bordes en 250, 400, 700 y 1000 ms, que
+      # coinciden con JOURNEY_LATENCY_BUDGET_MS y con los tres valores
+      # contrastados de OPENFINANCE_TIMEOUT_MS en SP-1.
+      - record: solventa:gateway_latency_p95:seconds
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, route) (rate(kong_request_latency_ms_bucket[30s]))
+          ) / 1000
+
+      - record: solventa:gateway_latency_p99:seconds
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, route) (rate(kong_request_latency_ms_bucket[30s]))
+          ) / 1000
+
+      # --- Serie de control de SP-5 ------------------------------------------
+      # La ruta Provider pasa por `cotizacion` a propósito, para compartir sus
+      # hilos de Gunicorn con la ruta de perfilamiento. Su p95 durante la
+      # saturación, contra su p95 en línea base sana, es la métrica de decisión
+      # del sub-experimento.
+      - record: solventa:provider_route_latency_p95:seconds
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(kong_request_latency_ms_bucket{route="provider-control"}[30s]))
+          ) / 1000

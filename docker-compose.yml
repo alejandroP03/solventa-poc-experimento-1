@@ -1,0 +1,105 @@
+# Stack del POC Solventa — modo treatment por defecto.
+#
+#   make up          levanta todo
+#   make baseline    aplica el override del control de SP-0
+#
+# Cada servicio lee su configuración de .env (`make env` lo crea desde
+# .env.example) más los overrides explícitos de `environment:`, que son los que
+# el experimento necesita fijar por instancia.
+
+name: solventa
+
+x-service-defaults: &service-defaults
+  env_file: .env
+  restart: unless-stopped
+  # Sin dependencias de orden de arranque (§8.2): cada servicio arranca aunque
+  # sus dependencias no estén listas y reintenta con backoff. `depends_on` sin
+  # condición solo ordena el arranque, no lo bloquea — ECS tampoco lo garantiza.
+
+services:
+
+  # --- Punto de entrada del socio ------------------------------------------ #
+
+  kong:
+    image: kong:3.7
+    container_name: solventa-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_STATUS_LISTEN: 0.0.0.0:8100
+      # Admin API apagada: el experimento no reconfigura Kong en caliente, y una
+      # API de administración abierta sería una vía para alterar el instrumento
+      # a mitad de corrida sin dejar rastro.
+      KONG_ADMIN_LISTEN: "off"
+      KONG_PROXY_ACCESS_LOG: /dev/null   # las peticiones ya se cuentan en /metrics
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: notice
+      KONG_NGINX_WORKER_PROCESSES: "2"
+    volumes:
+      - ./infra/kong/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "8080:8000"    # el socio entra por 8080, como fija §2.1
+      - "8100:8100"    # /metrics y /status para Prometheus
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Journey de cotización ------------------------------------------------ #
+
+  socio-distribucion:
+    <<: *service-defaults
+    container_name: solventa-socio-distribucion
+    build:
+      context: .
+      dockerfile: services/socio-distribucion/Dockerfile
+    image: solventa/socio-distribucion:local
+    environment:
+      SERVICE_NAME: socio-distribucion
+      PORT: 8081
+    ports:
+      - "8081:8081"
+
+  cotizacion:
+    <<: *service-defaults
+    container_name: solventa-cotizacion
+    build:
+      context: .
+      dockerfile: services/cotizacion/Dockerfile
+    image: solventa/cotizacion:local
+    environment:
+      SERVICE_NAME: cotizacion
+      PORT: 8082
+    ports:
+      - "8082:8082"
+
+  financial-profiler:
+    <<: *service-defaults
+    container_name: solventa-financial-profiler
+    build:
+      context: .
+      dockerfile: services/financial-profiler/Dockerfile
+    image: solventa/financial-profiler:local
+    environment:
+      SERVICE_NAME: financial-profiler
+      PORT: 8085
+    ports:
+      - "8085:8085"
+
+  # --- Instrumento del experimento ------------------------------------------ #
+
+  mock-openfinance:
+    <<: *service-defaults
+    container_name: solventa-mock-openfinance
+    build:
+      context: .
+      dockerfile: services/mock-openfinance/Dockerfile
+    image: solventa/mock-openfinance:local
+    environment:
+      SERVICE_NAME: mock-openfinance
+      PORT: 8090
+    ports:
+      - "8090:8090"

@@ -66,10 +66,10 @@ El único código compartido. Cada módulo lleva el comentario `# TÁCTICA: <nom
 - Métricas de SP-1: `solventa_openfinance_{duration_seconds,calls_total,timeout_exhausted_total}`.
 - **Compuerta:** perfil correcto con mock `normal`; con `error_5xx` el fallo se propaga (aún esperado).
 
-#### Fase 4 · `socio-distribucion` (8081) + `cotizacion` (8082) + `api-gateway` (8080)
+#### Fase 4 · `socio-distribucion` (8081) + `cotizacion` (8082) + Kong (8080)
 - `socio-distribucion`: precio determinista, latencia baja fija. Es la **ruta no afectada** de SP-5.
-- `cotizacion`: `POST /quotes`. En `baseline` llama al profiler en cadena bloqueante (timeout 30 s) y al provider; compone `prima = tarifa_base × f_edad × f_riesgo × f_monto`. Instrumenta las etapas del journey.
-- `api-gateway`: genera el `X-Correlation-Id`, proxya a cotizacion. Es la **frontera de medición del 5xx**.
+- `cotizacion`: `POST /quotes`. En `baseline` llama al profiler en cadena bloqueante (timeout 30 s) y al provider; compone `prima = tarifa_base × f_edad × f_riesgo × f_monto`. Instrumenta las etapas del journey. Expone además `GET /provider-quote`, la **serie de control de SP-5**: solo ruta Provider, pero compartiendo los hilos de Gunicorn con la ruta de perfilamiento.
+- **Kong 3.7 DB-less** en lugar del `api-gateway` en Flask (decisión del equipo, ver `OBSERVACIONES.md` OBS-06): plugin `correlation-id` para generar el `X-Correlation-Id` y plugin `prometheus` para la **frontera de medición del 5xx**, con `retries: 0` explícito para no multiplicar la carga durante la ventana de indisponibilidad.
 - `docker-compose.yml` + `docker-compose.baseline.yml` (override de `QUOTE_MODE` y timeout).
 - **Compuerta — hito del Bloque A:** `docker compose up` + curl al gateway → 200 con perfil real; mock a `error_5xx` → **el gateway devuelve 5xx**. Si el baseline no falla, el experimento no tiene premisa (§7 SP-0) y hay que revisar la concurrencia antes de seguir.
 
@@ -166,6 +166,7 @@ Los **dos frentes de saturación** de §7 SP-5, ambos medidos:
 | `libs/solventa_common/metrics.py` | Define todas las métricas de §6; el modo multiproceso decide si los datos del experimento son completos o la mitad |
 | `libs/solventa_common/messaging.py` | Única abstracción sobre `pika`; contiene single-active-consumer, reply queues, backoff y cierre limpio |
 | `libs/solventa_common/http_client.py` | Sede del bulkhead (SP-5) y del timeout (SP-1) |
+| `infra/kong/kong.yml` | Frontera de medición del 5xx y origen del correlation_id; `retries: 0` es crítico para la validez de SP-2 |
 | `services/financial-profiler/app/` | Componente bajo prueba: timeout + breaker + caché + señal del monitor. SP-1..SP-4 viven aquí |
 | `services/cotizacion/app/` | Invariante duro (nunca 5xx), registro de correlación, segundo frente de bulkhead |
 | `services/mock-openfinance/app/` | El instrumento; su `/health` mentiroso es la base de SP-4 |
@@ -179,7 +180,7 @@ Los **dos frentes de saturación** de §7 SP-5, ambos medidos:
 3. **Premisa:** `docker compose -f docker-compose.yml -f docker-compose.baseline.yml` con `error_5xx` → ~100 % de 5xx y saturación de workers; el mismo fixture en `treatment` → 0 % de 5xx.
 4. Los seis dashboards de Grafana (`localhost:3000`) cargan con datos.
 5. `docker kill procesador-cotizacion-primary` → sin pérdida de mensajes, `takeover_events_total` incrementa.
-6. `docker build -f services/<x>/Dockerfile .` funciona para los nueve servicios de forma independiente.
+6. `docker build -f services/<x>/Dockerfile .` funciona para los ocho servicios propios de forma independiente (Kong es imagen oficial, sin build).
 7. `scripts/run_experiment.sh SP-2` → `results/sp_2_matrix.md` poblado.
 8. Barrido completo `SP-0 … SP-5` y revisión de las 20 casillas de §12.
 

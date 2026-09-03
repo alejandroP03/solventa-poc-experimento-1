@@ -23,7 +23,9 @@ ENV PYTHONUNBUFFERED=1 \
     # tráfico que llega aquí está acotado aguas arriba por POOL_OPENFINANCE_MAX
     # (máx. 16) más los pings del Monitor, pero /admin/reset debe seguir
     # respondiendo para poder cerrar la ventana de indisponibilidad.
-    GUNICORN_WORKERS=1 \
+    # SOLVENTA_SINGLE_PROCESS y no GUNICORN_WORKERS: .env no define esta
+    # variable, así que el `env_file:` de compose no puede pisarla.
+    SOLVENTA_SINGLE_PROCESS=true \
     GUNICORN_THREADS=128
 
 WORKDIR /app
