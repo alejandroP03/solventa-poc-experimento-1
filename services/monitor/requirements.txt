@@ -1,0 +1,2 @@
+# Flask, Gunicorn, prometheus-client y requests llegan con solventa-common.
+# El lazo periódico se resuelve con threading de la librería estándar (§13.8).
