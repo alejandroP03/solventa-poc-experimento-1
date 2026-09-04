@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: kong
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - kong:8100
+
+  - job_name: solventa-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - socio-distribucion:8081
+          - cotizacion:8082
+          - procesador-cotizacion-primary:8083
+          - procesador-cotizacion-backup:8084
+          - financial-profiler:8085
+          - monitor:8086
+          - mock-openfinance:8090
+
+  - job_name: rabbitmq
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - rabbitmq:15692

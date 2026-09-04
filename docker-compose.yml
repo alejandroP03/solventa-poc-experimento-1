@@ -200,3 +200,22 @@ services:
       PORT: 8090
     ports:
       - "8090:8090"
+
+  # --- Observabilidad ------------------------------------------------------- #
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: solventa-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - kong
+      - rabbitmq

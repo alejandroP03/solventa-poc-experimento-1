@@ -1,0 +1,27 @@
+# Override opcional para ejecutar k6 dentro de compose:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml run --rm k6
+#
+# El script principal usa `docker run` para poder escribir cada resumen en
+# results/<run_id>/, pero este servicio queda como atajo interactivo.
+
+services:
+  k6:
+    image: grafana/k6:0.54.0
+    profiles:
+      - load
+    environment:
+      BASE_URL: http://kong:8000
+      LOAD_RPS: ${K6_RPS:-50}
+      LOAD_DURATION: ${K6_DURATION:-240s}
+    volumes:
+      - ./load/k6:/scripts:ro
+      - ./results:/results
+    working_dir: /scripts
+    command:
+      - run
+      - /scripts/quote_load.js
+      - --summary-export
+      - /results/k6_summary.json
+    depends_on:
+      - kong
